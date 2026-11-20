@@ -1,0 +1,7 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <Description>Met à jour le salon musical du site NightFall quand un lien est posté dans le chat au NightFall.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+</Project>

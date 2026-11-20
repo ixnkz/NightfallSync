@@ -1,0 +1,8 @@
+﻿{
+  "Author": "NightFall",
+  "Name": "NightFall Sync",
+  "Punchline": "Le salon musical du site NightFall, mis à jour depuis le jeu.",
+  "Description": "Quand vous êtes au NightFall (Moogle, La Coupe, secteur 12, parcelle 41) et qu'un lien Watch2Gether ou Twitch passe dans le chat, le plugin le met en ligne sur la carte du site neo-nightfall.net. Commande : /nightfall",
+  "Tags": ["nightfall", "rp"],
+  "RepoUrl": "https://github.com/ixnkz/NightfallSync"
+}
