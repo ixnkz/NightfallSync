@@ -50,7 +50,8 @@ public sealed class ConfigWindow : Window
             var plot = c.Plot;
             ImGui.SetNextItemWidth(160);
             if (ImGui.InputInt("Parcelle", ref plot)) { c.Plot = Math.Clamp(plot, 1, 60); plugin.Save(); }
-            ImGui.TextDisabled("Il faut être à l'intérieur de la maison.");
+            var yard = c.YardCounts;
+            if (ImGui.Checkbox("Compter aussi le jardin (devant la maison)", ref yard)) { c.YardCounts = yard; plugin.Save(); }
         }
 
         if (ImGui.CollapsingHeader("Qui peut poster le lien"))
@@ -68,7 +69,7 @@ public sealed class ConfigWindow : Window
         {
             var url = manual.Trim();
             if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) url = "https://" + url;
-            _ = System.Threading.Tasks.Task.Run(() => plugin.Send(url));
+            _ = plugin.Send(url);
             manual = "";
         }
         ImGui.TextWrapped(plugin.Status);
