@@ -52,7 +52,6 @@ public sealed class Plugin : IDalamudPlugin
             HelpMessage = "Ouvre les réglages de NightFall Sync (salon musical du site).",
         });
         Chat.ChatMessageUnhandled += OnChat;
-        Http.DefaultRequestHeaders.UserAgent.ParseAdd("NightfallPlugin/1.0");
     }
 
     public void Dispose()
@@ -69,22 +68,30 @@ public sealed class Plugin : IDalamudPlugin
     public void Save() => PluginInterface.SavePluginConfig(Config);
 
     /// <summary>Where the character stands, as text for the window, and whether it is the NightFall.</summary>
+    // Only plain reads of the game's memory here, never a call into the game's own functions:
+    // a game function that moved after a patch would crash the game, a read cannot.
     public unsafe (bool Here, string Where) Location()
     {
-        if (!ClientState.IsLoggedIn || !Player.IsLoaded) return (false, "Pas connecté");
-        var hm = HousingManager.Instance();
-        if (hm == null) return (false, "Hors quartier résidentiel");
-        var world = Player.CurrentWorld.Value.Name.ExtractText();
-        var inside = hm->IsInside();
-        var id = hm->GetCurrentHouseId();
-        int ward = hm->GetCurrentWard() + 1, plot = hm->GetCurrentPlot() + 1;
-        if (ward <= 0) return (false, $"{world}, hors quartier résidentiel");
-        var district = Places.All.FirstOrDefault(p => p.Id == id.TerritoryTypeId).Name ?? $"zone {id.TerritoryTypeId}";
-        var where = $"{world} · {district} · secteur {ward} · parcelle {(plot > 0 ? plot : 0)}{(inside ? " (intérieur)" : "")}";
-        var here = string.Equals(world, Config.World, StringComparison.OrdinalIgnoreCase)
-                   && id.TerritoryTypeId == Config.District && ward == Config.Ward && plot == Config.Plot
-                   && (inside || Config.YardCounts);
-        return (here, where);
+        try
+        {
+            if (!ClientState.IsLoggedIn || !Player.IsLoaded) return (false, "Pas connecté");
+            var hm = HousingManager.Instance();
+            if (hm == null || hm->IndoorTerritory == null) return (false, "Pas à l'intérieur d'une maison");
+            var id = hm->IndoorTerritory->HouseId;
+            if (id.IsApartment || id.IsWorkshop) return (false, "Appartement ou atelier, pas une maison");
+            var world = Player.CurrentWorld.ValueNullable?.Name.ExtractText() ?? "?";
+            int ward = id.WardIndex + 1, plot = id.PlotIndex + 1;
+            var district = Places.All.FirstOrDefault(p => p.Id == id.TerritoryTypeId).Name ?? $"zone {id.TerritoryTypeId}";
+            var where = $"{world} · {district} · secteur {ward} · parcelle {plot}";
+            var here = string.Equals(world, Config.World, StringComparison.OrdinalIgnoreCase)
+                       && id.TerritoryTypeId == Config.District && ward == Config.Ward && plot == Config.Plot;
+            return (here, where);
+        }
+        catch (Exception e)
+        {
+            Log.Error(e, "NightFall Sync: location");
+            return (false, "Adresse illisible");
+        }
     }
 
     private void OnChat(Dalamud.Game.Chat.IChatMessage msg)
@@ -99,7 +106,8 @@ public sealed class Plugin : IDalamudPlugin
             var url = m.Value.TrimEnd('.', ',', ')', '!', '?');
             if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) url = "https://" + url;
             if (url.Equals(Config.LastSent, StringComparison.OrdinalIgnoreCase)) return;
-            _ = Send(url);
+            // The network work leaves the chat at once, so the game never waits on the site.
+            _ = Task.Run(() => Send(url));
         }
         catch (Exception e) { Log.Error(e, "NightFall Sync: chat"); }
     }
@@ -112,33 +120,44 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>Puts the room on the site (the same as the organizer's "Ouvrir le salon" button on the menu).</summary>
+    // Runs off the game's thread: only the network waits there. Saving and printing go back to the game's thread.
     public async Task Send(string url)
     {
         Config.LastSent = url;
-        Save();
+        var key = Config.OrganizerKey.Trim();
+        bool ok = false;
+        string status;
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Put, $"{Relay}/music")
             {
                 Content = new StringContent(JsonSerializer.Serialize(new { url, label = "" }), Encoding.UTF8, "application/json"),
             };
-            req.Headers.Add("X-Organizer-Key", Config.OrganizerKey.Trim());
-            using var res = await Http.SendAsync(req);
-            var body = await res.Content.ReadAsStringAsync();
-            Status = res.IsSuccessStatusCode
+            req.Headers.TryAddWithoutValidation("User-Agent", "NightfallPlugin/1.1");
+            req.Headers.TryAddWithoutValidation("X-Organizer-Key", key);
+            using var res = await Http.SendAsync(req).ConfigureAwait(false);
+            var body = await res.Content.ReadAsStringAsync().ConfigureAwait(false);
+            ok = res.IsSuccessStatusCode;
+            status = ok
                 ? $"{DateTime.Now:HH:mm} · salon mis en ligne : {url}"
                 : $"{DateTime.Now:HH:mm} · refusé ({(int)res.StatusCode}) : {Explain(body)}";
-            if (!res.IsSuccessStatusCode) Config.LastSent = "";
         }
         catch (Exception e)
         {
-            Status = $"{DateTime.Now:HH:mm} · site injoignable : {e.Message}";
-            Config.LastSent = "";
+            status = $"{DateTime.Now:HH:mm} · site injoignable : {e.Message}";
             Log.Error(e, "NightFall Sync: send");
         }
-        Save();
-        var ok = Status.Contains("mis en ligne");
-        await Framework.RunOnFrameworkThread(() => Chat.Print(ok ? $"[NightFall] Salon du site mis à jour : {url}" : $"[NightFall] {Status}"));
+        try
+        {
+            await Framework.RunOnFrameworkThread(() =>
+            {
+                Status = status;
+                if (!ok) Config.LastSent = "";
+                Save();
+                Chat.Print(ok ? $"[NightFall] Salon du site mis à jour : {url}" : $"[NightFall] {status}");
+            }).ConfigureAwait(false);
+        }
+        catch (Exception e) { Log.Error(e, "NightFall Sync: after send"); }
     }
 
     private static string Explain(string body) =>
